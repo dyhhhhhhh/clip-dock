@@ -1,0 +1,1158 @@
+# AGENTS.md — ClipDock macOS 剪贴板管理器执行文档
+
+本文件写给 Codex。请将本文件放在仓库根目录。Codex 开始工作前必须先阅读本文件，并把它作为项目指令、实现边界、TODO 清单和验收标准。
+
+执行原则：
+
+- 不跳过验收标准。
+- 不实现 TODO 之外的大范围功能。
+- 不删除用户已有文件，除非 TODO 明确要求。
+- 每次只完成一个阶段，或一组强相关的小任务。
+- 每次改动后尽量运行可用的构建、测试或静态检查命令。
+- 每次完成会影响 App 运行效果的修改并通过可用验证后，自动重启本地 ClipDock App；如无法自动重启，必须说明原因和手动重启命令。纯文档修改可说明无需重启。
+- 如果当前环境不是 macOS 或没有 Xcode，不要声称构建通过；应实现源码，并明确写出需要在 macOS/Xcode 上运行的验证命令。
+
+---
+
+## 1. 项目目标
+
+构建 **ClipDock**：一个本地优先、隐私优先的 macOS 剪贴板管理软件。
+
+产品需要提供：
+
+- 菜单栏常驻入口。
+- 全局快捷键打开剪贴板历史搜索面板。
+- 剪贴板历史在 App 重启和 macOS 重启后仍然保留。
+- 隐私优先的捕获规则，避免保存敏感内容、临时内容、隐藏内容、自动生成内容和来自忽略应用的内容。
+- 本地保存文本、链接、图片和文件 URL 历史。
+- 支持搜索、过滤、固定、删除、清空、恢复到系统剪贴板。
+- 自动粘贴必须是可选功能，且只能在用户明确开启并具备 macOS 权限时启用。
+
+MVP 优先级：
+
+1. 隐私安全。
+2. 剪贴板捕获可靠性。
+3. 历史记录持久化。
+4. 搜索与恢复体验。
+5. 清晰、稳定、可维护的代码结构。
+
+MVP 不优先实现云同步、AI、插件、团队共享或跨设备同步。
+
+---
+
+## 2. 已确定的产品约束
+
+除非仓库中已有明确的相反要求，否则按以下约束执行。
+
+### 2.1 App 形态
+
+- 平台：macOS 桌面应用。
+- UI：SwiftUI 优先，必要时使用 AppKit。
+- 运行形态：菜单栏 App + 可打开主窗口。
+- 数据策略：默认仅本地保存。
+- 网络策略：MVP 不依赖网络，不上传剪贴板内容。
+- 持久化：ClipDock 捕获到的历史记录应在 App 或系统重启后仍然存在。
+- 系统当前剪贴板本身不应被假定为重启后仍然存在。
+- App 启动时可以读取历史数据库，但默认不得自动把最后一条历史写回系统剪贴板。
+
+### 2.2 MVP 必做范围
+
+必须实现：
+
+- 文本历史。
+- URL 历史。
+- 图片历史，至少支持图片元数据；是否保存图片 payload 由设置控制。
+- 文件 URL 历史，只保存路径或引用，不复制文件本体。
+- 搜索和类型过滤。
+- 固定 / 取消固定。
+- 删除单条历史。
+- 清空历史。
+- 应用黑名单。
+- 暂停记录。
+- 基础设置页。
+- 核心逻辑单元测试。
+
+MVP 暂不实现：
+
+- 云同步。
+- 用户账户。
+- 团队共享。
+- OCR。
+- AI 摘要或 AI 处理剪贴板内容。
+- 插件系统。
+- 跨设备同步。
+- 复杂自动化脚本。
+- 遥测、远程日志或分析上报。
+
+---
+
+## 3. 技术方向
+
+优先使用以下技术方案：
+
+- 语言：Swift。
+- UI：SwiftUI，必要时桥接 AppKit。
+- 剪贴板 API：`NSPasteboard.general`。
+- 剪贴板变化检测：轮询 `NSPasteboard.changeCount`。
+- 菜单栏入口：优先使用 SwiftUI `MenuBarExtra`。
+- 存储：SQLite、GRDB、SQLite.swift，或仓库已有的轻量持久化方案。选择最小且可靠的依赖路径。
+- 搜索：MVP 可先使用内存归一化搜索；后续可升级 SQLite FTS5。
+- 密钥：如引入加密，密钥应放在 Keychain。
+- 加密：MVP 可先设计接口，不强制完整实现数据库加密。
+- 登录时启动：如实现，使用 `SMAppService`。
+- 自动粘贴：如实现，需要检测辅助功能权限；没有权限时只能恢复到剪贴板，不得自动粘贴。
+
+依赖原则：
+
+- 优先使用成熟、轻量、维护良好的依赖。
+- 不要为了 MVP 引入大型框架。
+- 新增生产依赖前，先说明理由和替代方案。
+
+---
+
+## 4. Codex 工作规则
+
+开始任何实现前，先执行仓库审计。
+
+必须先做：
+
+1. 查看仓库目录结构。
+2. 判断仓库是 Xcode 项目、Swift Package、已有 App，还是空目录。
+3. 找出已有构建命令、测试命令、格式化命令和 lint 命令。
+4. 如果已有项目，必须融入现有架构，不要重建整个项目。
+5. 如果仓库为空，创建最小可工作的 macOS SwiftUI 项目结构。
+6. 做任何 UI、视觉、交互或样式实现前，必须先阅读并参考根目录 `DESIGN.md`。
+7. 做任何 UI、品牌视觉、图标、插图、启动页、截图占位或营销视觉前，必须先查看项目根目录和资源目录中的图片素材；当前根目录图片参考包括 `ChatGPT Image 2026年5月27日 14_47_26.png`。
+8. 不要删除用户已有文件。
+9. 改动范围必须与当前 TODO 对齐。
+10. 每次改动后运行最相关的验证命令。
+11. 构建或测试失败时，优先修复失败，不要继续堆叠新功能。
+12. 每次完成会影响 App 运行效果的修改并通过可用验证后，自动重启本地 ClipDock App，让最新构建进入运行态。
+13. 如果无法自动重启 App，必须汇报失败原因、当前运行状态和用户可执行的手动重启命令。
+14. 如果无法在当前环境执行 macOS 构建，必须写出准确的本地验证命令。
+
+每次任务结束时，必须汇报：
+
+- 已完成的 TODO。
+- 修改了哪些文件。
+- 执行了哪些命令。
+- 构建 / 测试状态。
+- App 自动重启状态。
+- 已知限制。
+- 下一步推荐 TODO。
+
+---
+
+## 5. 目标目录结构
+
+Codex 应尽量向以下结构靠拢。若仓库已有命名规范，应适配现有规范。
+
+```text
+ClipDock/
+  App/
+    ClipDockApp.swift
+    AppState.swift
+    DependencyContainer.swift
+  Clipboard/
+    ClipboardMonitor.swift
+    ClipboardReader.swift
+    ClipboardWriter.swift
+    ClipboardItemNormalizer.swift
+    PasteController.swift
+    PasteboardAdapter.swift
+  Models/
+    ClipItem.swift
+    ClipType.swift
+    ClipPayload.swift
+    AppRule.swift
+    UserSettings.swift
+    CaptureDecision.swift
+  Privacy/
+    PrivacyRuleEngine.swift
+    SensitiveTextDetector.swift
+    PasteboardTypePolicy.swift
+    IgnoredAppStore.swift
+  Storage/
+    ClipRepository.swift
+    SQLiteClipRepository.swift
+    InMemoryClipRepository.swift
+    PayloadStore.swift
+    SearchIndex.swift
+  Search/
+    ClipSearchService.swift
+    SearchQuery.swift
+    SearchRanker.swift
+  UI/
+    MenuBar/
+      MenuBarContentView.swift
+    Launcher/
+      LauncherWindowController.swift
+      LauncherView.swift
+      ClipRowView.swift
+    MainWindow/
+      HistoryWindowView.swift
+      SidebarView.swift
+      DetailPaneView.swift
+    Settings/
+      SettingsView.swift
+      GeneralSettingsView.swift
+      HistorySettingsView.swift
+      PrivacySettingsView.swift
+      AdvancedSettingsView.swift
+  Utilities/
+    Hashing.swift
+    DateFormatting.swift
+    Logger.swift
+Tests/
+  ClipboardTests/
+  PrivacyTests/
+  StorageTests/
+  SearchTests/
+```
+
+---
+
+## 6. 核心数据模型
+
+实现或近似实现以下模型。
+
+```swift
+struct ClipItem: Identifiable, Codable, Equatable {
+    let id: UUID
+    let contentHash: String
+    let primaryType: ClipType
+    let capturedAt: Date
+    var lastUsedAt: Date?
+    let sourceBundleID: String?
+    let sourceAppName: String?
+    let previewText: String?
+    let title: String?
+    let byteSize: Int
+    var isPinned: Bool
+    var isFavorite: Bool
+    var isSensitive: Bool
+    var expiresAt: Date?
+    var tags: [String]
+    let payloadRef: String?
+}
+```
+
+```swift
+enum ClipType: String, Codable, CaseIterable {
+    case plainText
+    case richText
+    case html
+    case url
+    case image
+    case fileURL
+    case color
+    case unknown
+}
+```
+
+最低行为要求：
+
+- `contentHash` 用于去重。
+- `previewText` 必须适合 UI 展示，过长内容要截断。
+- `payloadRef` 指向图片、富文本或其他大 payload 的存储位置。
+- 默认不得保存敏感内容。
+- 文件 URL 只保存路径或安全引用，不复制文件内容。
+
+---
+
+## 7. 隐私规则
+
+隐私是核心需求，不是后续增强项。Codex 必须先实现隐私判断，再做持久化。
+
+### 7.1 默认忽略的内容
+
+以下情况必须默认忽略：
+
+- 当前处于暂停记录状态。
+- 来源 App 在忽略列表中。
+- Pasteboard item 包含 transient / concealed / autogenerated 类型标记。
+- 文本强烈疑似密码、私钥、访问令牌、API Key、信用卡号、助记词或一次性验证码。
+- 内容大小超过设置中的最大单项大小。
+- App 处于临时模式或隐私模式，且当前策略要求不保存。
+
+### 7.2 Pasteboard 类型策略
+
+新增 `PasteboardTypePolicy`，用于判断类型集合是否应保存。
+
+必须支持：
+
+- transient 类型标记。
+- concealed 类型标记。
+- autogenerated 类型标记。
+- 不支持类型时优雅降级。
+
+返回结果必须是结构化对象，例如：
+
+```swift
+struct CaptureDecision: Equatable {
+    let isAllowed: Bool
+    let reason: CaptureDecisionReason
+}
+```
+
+示例 reason：
+
+```swift
+enum CaptureDecisionReason: String, Codable {
+    case allowed
+    case recordingPaused
+    case ignoredApp
+    case transientType
+    case concealedType
+    case autogeneratedType
+    case sensitiveText
+    case tooLarge
+    case unsupportedType
+}
+```
+
+### 7.3 敏感文本检测
+
+新增 `SensitiveTextDetector`，规则要保守，宁可误拦也不要误存。
+
+最低检测范围：
+
+- PEM 私钥块。
+- 常见 API token / secret / key 字段。
+- 常见 token 前缀。
+- 长高熵字符串。
+- 类信用卡数字串，尽量使用 Luhn 校验。
+- 明确标注为验证码、OTP、2FA 的短数字串。
+
+注意：
+
+- 不要把所有短数字都当作敏感内容。
+- 不要记录被拦截内容的原文到日志。
+- Debug 日志只能记录拦截原因和类型，不得记录敏感值。
+
+### 7.4 用户控制
+
+设置页后续必须支持：
+
+- 暂停记录。
+- 应用黑名单。
+- 清空全部历史。
+- 清空最近历史。
+- 最大历史数量。
+- 保留时间。
+- 是否保存图片。
+- 是否保存文件 URL。
+
+---
+
+## 8. 剪贴板捕获流程
+
+按以下顺序实现捕获管线：
+
+```text
+检测 pasteboard.changeCount 变化
+  -> 读取类型元信息和来源 App
+  -> 应用暂停 / 类型 / 应用 / 大小 / 隐私规则
+  -> 只有允许保存时才读取完整内容
+  -> 归一化内容
+  -> 计算 contentHash
+  -> 去重
+  -> 保存 ClipItem 和 payload
+  -> 更新搜索索引
+  -> 通知 UI 刷新
+```
+
+必须遵守：
+
+- 不要在隐私规则允许前读取完整内容。
+- 不要保存被忽略或敏感的内容。
+- 同一内容重复复制时，默认更新元数据，不新增噪声记录。
+- 默认轮询间隔为 0.5 到 1 秒，可配置。
+- 暂停记录时停止捕获。
+- App 启动时加载历史，但默认不恢复到系统剪贴板。
+
+---
+
+## 9. UI 要求
+
+通用视觉要求：
+
+- UI 实现必须以根目录 `DESIGN.md` 作为视觉参考，包括色彩、字体、层级、间距、组件状态和整体质感。
+- 涉及视觉资产时，优先参考项目内图片素材；当前根目录图片参考包括 `ChatGPT Image 2026年5月27日 14_47_26.png`。
+- 如果 `DESIGN.md`、图片素材和本文件 TODO 冲突，优先满足本文件的产品功能和隐私约束，再在不破坏约束的前提下贴近视觉参考。
+
+### 9.1 全局快捷面板
+
+目标行为：
+
+- 通过全局快捷键打开。
+- 顶部搜索框。
+- 类型过滤 chip：全部、文本、链接、图片、文件、已固定。
+- 列表展示：类型图标、预览、来源、时间、固定状态。
+- 键盘优先：
+  - Enter：恢复选中项到系统剪贴板。
+  - Space：预览选中项。
+  - Cmd+D：删除。
+  - Cmd+P：固定 / 取消固定。
+  - Cmd+E：编辑文本项，如果该功能已实现。
+
+MVP 可接受降级：
+
+- 如果全局快捷键和浮窗基础设施暂未完成，先实现 SwiftUI 面板，并允许从菜单栏或主窗口打开。
+
+### 9.2 菜单栏下拉面板
+
+目标行为：
+
+- 展示最近复制的内容。
+- 暂停 / 恢复记录。
+- 打开主窗口。
+- 打开设置。
+- 清空历史。
+- 显示当前模式：标准、隐私、已暂停。
+
+### 9.3 主历史窗口
+
+目标行为：
+
+- 侧边栏过滤：全部、文本、链接、图片、文件、已固定、已忽略、回收站。
+- 搜索框。
+- 排序和过滤控制。
+- 历史列表。
+- 右侧详情预览。
+- 操作：复制到剪贴板、自动粘贴、编辑、删除、固定。
+
+### 9.4 设置页
+
+分组要求：
+
+- 通用：登录时启动、快捷键、默认粘贴行为。
+- 历史：最大历史条数、保留时间、是否保存图片、是否保存文件 URL、去重策略。
+- 隐私：暂停记录、应用黑名单、敏感内容处理、清空历史。
+- 高级：重建索引、存储位置、调试 pasteboard 类型、低功耗轮询。
+
+---
+
+## 10. TODO 执行清单
+
+Codex 应按顺序执行。每个阶段完成后先验证，再进入下一阶段。
+
+---
+
+### Phase 0 — 仓库审计与项目初始化
+
+#### TODO 0.1 — 审计仓库状态
+
+任务：
+
+- [x] 查看仓库目录树。
+- [x] 判断项目类型：Xcode 项目、Swift Package、已有 macOS App 或空目录。
+- [x] 找出 app target、包管理方式、测试 target。
+- [x] 找出现有构建、测试、lint、格式化命令。
+- [x] 记录现有代码风格和目录约定。
+
+验收标准：
+
+- Codex 汇报检测到的项目类型。
+- Codex 列出可用命令；如果没有命令，说明原因。
+- Codex 给出最小安全实现路径。
+- 默认不要修改文件，除非为了审计必须创建极小辅助文件。
+
+#### TODO 0.2 — 创建或规范项目骨架
+
+任务：
+
+- [x] 如果仓库为空，创建最小 macOS SwiftUI App 结构。
+- [x] 如果仓库已有项目，在不破坏现有结构的前提下添加缺失模块目录。
+- [x] 添加 `AppState` 或等价状态容器。
+- [x] 添加依赖注入入口或轻量服务容器。
+
+验收标准：
+
+- 项目结构可以继续添加 Clipboard、Storage、Privacy、Search、UI 模块。
+- 构建命令已明确。
+- 不破坏已有文件。
+
+---
+
+### Phase 1 — 核心模型与设置
+
+#### TODO 1.1 — 实现核心模型
+
+任务：
+
+- [x] 添加 `ClipItem`。
+- [x] 添加 `ClipType`。
+- [x] 添加 `ClipPayload` 或等价类型。
+- [x] 添加 `UserSettings`。
+- [x] 添加来源 App 元数据字段。
+- [x] 添加 `CaptureDecision` 和 `CaptureDecisionReason`。
+
+验收标准：
+
+- 模型可编译。
+- 需要持久化的模型支持 `Codable`。
+- 如已有测试 target，添加基础编码、相等性、默认值测试。
+
+#### TODO 1.2 — 实现设置默认值
+
+任务：
+
+- [x] 默认最大历史条数。
+- [x] 默认保留时间。
+- [x] 默认保存图片开关。
+- [x] 默认保存文件 URL 开关。
+- [x] 默认轮询间隔。
+- [x] 默认隐私策略。
+
+建议默认值：
+
+```text
+maxHistoryCount = 1000
+retentionDays = 30
+saveImages = true
+saveFileURLs = true
+pollingInterval = 0.8 秒
+recordingPaused = false
+ignoreSensitiveContent = true
+restoreLastClipboardOnStartup = false
+```
+
+验收标准：
+
+- 默认值集中定义。
+- UI 和服务层读取同一个设置来源。
+- 设置可以持久化到 `UserDefaults` 或仓库已有设置系统。
+
+---
+
+### Phase 2 — 隐私规则引擎
+
+#### TODO 2.1 — 添加 Pasteboard 类型策略
+
+任务：
+
+- [x] 检测 transient 类型。
+- [x] 检测 concealed 类型。
+- [x] 检测 autogenerated 类型。
+- [x] 返回 allow / ignore 和 reason。
+- [x] 不记录原始敏感内容。
+
+验收标准：
+
+- 类型策略有单元测试。
+- 每一种忽略原因都可被测试覆盖。
+- Debug UI 或日志只能显示 reason，不显示内容。
+
+#### TODO 2.2 — 添加忽略应用策略
+
+任务：
+
+- [x] 保存被忽略的 bundle identifier。
+- [x] 支持按 source bundle ID 判断是否忽略。
+- [x] 提供默认建议应用，例如密码管理器、银行软件、企业安全工具。
+- [x] 默认建议不应导致不存在的 App 报错。
+
+验收标准：
+
+- 测试覆盖允许和忽略的 bundle ID。
+- 设置层可以读写忽略列表。
+
+#### TODO 2.3 — 添加敏感文本检测器
+
+任务：
+
+- [x] 检测 PEM 私钥块。
+- [x] 检测常见 API token / secret 字段。
+- [x] 检测长高熵字符串。
+- [x] 检测类信用卡字符串，尽量使用 Luhn 校验。
+- [x] 检测明确标注的验证码 / OTP / 2FA。
+
+验收标准：
+
+- 测试包含正例和反例。
+- 检测器偏向隐私安全。
+- 日志不得输出原始敏感文本。
+
+#### TODO 2.4 — 组合隐私规则引擎
+
+任务：
+
+- [x] 组合暂停状态、来源 App、类型标记、大小限制、敏感文本检测。
+- [x] 返回结构化 decision。
+- [x] 捕获管线可以在持久化前调用该 engine。
+
+验收标准：
+
+- 每条决策路径都有测试。
+- 被忽略内容不会进入 repository。
+
+---
+
+### Phase 3 — 剪贴板读取与写入
+
+#### TODO 3.1 — 实现剪贴板监听器
+
+任务：
+
+- [x] 监听 `NSPasteboard.general.changeCount`。
+- [x] 使用可配置轮询间隔。
+- [x] 变化时发布 capture event。
+- [x] 暂停记录时停止捕获。
+- [x] 使用可 mock 的 pasteboard adapter，便于测试。
+
+验收标准：
+
+- Monitor 不包含 UI 代码。
+- 可以用 fake pasteboard 测试 changeCount 行为。
+
+#### TODO 3.2 — 实现剪贴板读取器
+
+任务：
+
+- [x] 读取纯文本。
+- [x] 读取 URL。
+- [x] 读取图片数据或图片元数据，取决于设置。
+- [x] 读取 file URL 为路径 / 引用。
+- [x] 对不支持类型优雅跳过。
+
+验收标准：
+
+- Reader 返回归一化 candidate 对象。
+- Reader 不直接持久化。
+- Reader 在隐私规则允许后才读取完整内容。
+
+#### TODO 3.3 — 实现剪贴板写入器
+
+任务：
+
+- [x] 将文本恢复到系统剪贴板。
+- [x] 将 URL 恢复到系统剪贴板。
+- [x] 在 payload 支持后恢复图片 / 文件 URL。
+- [x] 恢复后更新使用时间或使用次数。
+
+验收标准：
+
+- 写入逻辑独立于 UI。
+- 测试尽量使用 fake pasteboard。
+
+#### TODO 3.4 — 实现粘贴控制器
+
+任务：
+
+- [x] 添加手动恢复到剪贴板动作。
+- [x] 添加可选自动粘贴路径。
+- [x] 自动粘贴缺少权限时显示禁用或错误状态。
+
+验收标准：
+
+- 手动恢复不需要辅助功能权限。
+- 自动粘贴默认关闭。
+- 没有用户明确设置时，不得自动粘贴。
+
+---
+
+### Phase 4 — 持久化与去重
+
+#### TODO 4.1 — 实现 Repository 接口
+
+任务：
+
+- [x] 添加 `ClipRepository` 协议。
+- [x] 添加 CRUD。
+- [x] 添加最近列表。
+- [x] 添加搜索 / 过滤 API。
+- [x] 添加固定 / 取消固定。
+- [x] 添加删除 / 清空。
+
+验收标准：
+
+- UI 依赖协议，不直接依赖具体存储。
+- 测试可使用 `InMemoryClipRepository`。
+
+#### TODO 4.2 — 实现 SQLite 或选定存储后端
+
+任务：
+
+- [x] 创建 clip item 表结构。
+- [x] 创建 tag 表结构，如需要。
+- [x] 创建 payload 存储结构。
+- [x] 添加 schema version。
+- [x] 添加 migration 入口。
+- [x] 历史记录可跨 App 重启保留。
+
+验收标准：
+
+- 插入的历史在 repository 重建后仍可读取。
+- 至少存在 version 1 迁移路径。
+
+#### TODO 4.3 — 实现 PayloadStore
+
+任务：
+
+- [x] 仅在设置允许时保存图片 payload。
+- [x] 大 payload 不直接放主表，除非仓库已有合理方案。
+- [x] 文件 URL 只保存引用，不复制文件内容。
+- [x] 删除历史时清理关联 payload。
+- [x] 清空历史时清理所有相关 payload。
+
+验收标准：
+
+- 大 payload 不阻塞历史列表渲染。
+- 删除 / 清空后没有孤儿 payload。
+
+#### TODO 4.4 — 实现去重
+
+任务：
+
+- [x] 对归一化内容计算 hash。
+- [x] 重复复制相同内容时默认不新增记录。
+- [x] 重复时更新 capturedAt 或 lastUsedAt 等元数据。
+- [x] 不同类型但预览相同的内容不应错误合并。
+
+验收标准：
+
+- 测试证明重复复制不会制造噪声记录。
+- 测试证明不同类型不会错误冲突。
+
+---
+
+### Phase 5 — 搜索与过滤
+
+#### TODO 5.1 — 实现搜索服务
+
+任务：
+
+- [x] 按 previewText / title 搜索。
+- [x] 按 ClipType 过滤。
+- [x] 过滤已固定。
+- [x] 默认按最近时间排序。
+
+验收标准：
+
+- 空查询返回最近历史。
+- 搜索结果稳定且可测试。
+
+#### TODO 5.2 — 添加查询语法解析
+
+可支持以下语法：
+
+```text
+type:text docker
+app:Safari api
+is:pinned
+before:7d
+```
+
+任务：
+
+- [x] 解析 `type:`。
+- [x] 解析 `app:`。
+- [x] 解析 `is:pinned`。
+- [x] 解析 `before:`。
+- [x] 未知 token 应优雅降级为普通关键词。
+
+验收标准：
+
+- 查询解析有测试。
+- 未知语法不会导致崩溃。
+
+#### TODO 5.3 — 添加排序权重
+
+任务：
+
+- [x] 精确匹配加权。
+- [x] 前缀匹配加权。
+- [x] 固定项加权。
+- [x] 最近复制加权。
+
+验收标准：
+
+- 有代表性排序测试。
+- 排序确定，不随机。
+
+---
+
+### Phase 6 — 菜单栏与基础 UI
+
+#### TODO 6.1 — 添加菜单栏入口
+
+任务：
+
+- [x] 添加菜单栏 icon / entry。
+- [x] 展示最近历史。
+- [x] 添加暂停记录开关。
+- [x] 添加打开主窗口动作。
+- [x] 添加打开设置动作。
+- [x] 添加清空历史动作。
+
+验收标准：
+
+- App 可作为菜单栏工具运行。
+- 历史变化时菜单栏内容刷新。
+
+#### TODO 6.2 — 添加 ClipRowView
+
+任务：
+
+- [x] 展示类型图标。
+- [x] 展示预览文本 / 标题。
+- [x] 展示来源 App。
+- [x] 展示时间。
+- [x] 展示固定状态。
+
+验收标准：
+
+- Row 组件可复用于菜单栏、快捷面板、主窗口。
+
+#### TODO 6.3 — 添加主历史窗口
+
+任务：
+
+- [x] 添加侧边栏过滤。
+- [x] 添加搜索框。
+- [x] 添加历史列表。
+- [x] 添加详情预览。
+- [x] 绑定恢复、删除、固定动作。
+
+验收标准：
+
+- 用户可以搜索、选择、恢复、删除、固定历史项。
+
+---
+
+### Phase 7 — 快捷面板体验
+
+#### TODO 7.1 — 添加 LauncherView
+
+任务：
+
+- [x] 搜索框优先布局。
+- [x] 类型过滤 chips。
+- [x] 键盘上下选择。
+- [x] 底部快捷键提示。
+
+验收标准：
+
+- 即使全局快捷键暂未完成，也能从 App 动作打开面板。
+
+#### TODO 7.2 — 添加全局快捷键
+
+任务：
+
+- [x] 使用原生方式或轻量依赖注册全局快捷键。
+- [x] 快捷键尽量可配置。
+- [x] 避免与系统快捷键冲突。
+- [x] 注册失败时在设置或日志中可见。
+
+验收标准：
+
+- App 运行时，快捷键可以打开 Launcher。
+- 注册失败不会导致 App 崩溃。
+
+#### TODO 7.3 — 添加 Launcher 操作
+
+任务：
+
+- [x] Enter 恢复选中项到剪贴板。
+- [x] Space 预览选中项。
+- [x] Cmd+D 删除选中项。
+- [x] Cmd+P 固定 / 取消固定选中项。
+
+验收标准：
+
+- 不使用鼠标也能完成搜索和恢复。
+
+---
+
+### Phase 8 — 设置页
+
+#### TODO 8.1 — 通用设置
+
+任务：
+
+- [x] 登录时启动。
+- [x] 全局快捷键。
+- [x] 默认粘贴行为。
+- [x] 菜单栏显示控制，如适用。
+
+验收标准：
+
+- 设置跨 App 重启保留。
+
+#### TODO 8.2 — 历史设置
+
+任务：
+
+- [x] 最大历史条数。
+- [x] 保留时间。
+- [x] 保存图片开关。
+- [x] 保存文件 URL 开关。
+- [x] 去重策略。
+
+验收标准：
+
+- 设置被捕获管线和存储层实际使用。
+
+#### TODO 8.3 — 隐私设置
+
+任务：
+
+- [x] 暂停记录。
+- [x] 应用黑名单。
+- [x] 敏感内容处理。
+- [x] 清空全部历史。
+- [x] 清空最近历史。
+
+验收标准：
+
+- 隐私设置立即生效，或明确提示需要重启。
+- 清空类操作需要确认。
+
+#### TODO 8.4 — 高级设置
+
+任务：
+
+- [x] 重建搜索索引。
+- [x] 显示存储路径。
+- [x] 调试 pasteboard 类型视图。
+- [x] 低功耗轮询模式。
+
+验收标准：
+
+- 高级操作安全。
+- 破坏性操作需要确认。
+
+---
+
+### Phase 9 — 清理、保留策略与启动行为
+
+#### TODO 9.1 — 实现保留期清理
+
+任务：
+
+- [x] 删除过期历史。
+- [x] 执行最大历史数量限制。
+- [x] 清理孤儿 payload。
+- [x] 默认保留固定项，除非用户设置另有要求。
+
+验收标准：
+
+- 测试证明旧记录和超额记录会被清理。
+- 固定项默认不被自动清理。
+
+#### TODO 9.2 — 实现启动加载
+
+任务：
+
+- [x] App 启动时加载持久化历史。
+- [x] 恢复 UI 状态。
+- [x] 默认不写入系统剪贴板。
+
+验收标准：
+
+- 重启后历史可见。
+- 启动时系统剪贴板不被改写，除非用户明确开启。
+
+#### TODO 9.3 — 添加可选“启动后恢复最近剪贴板”
+
+任务：
+
+- [x] 添加设置项，默认关闭。
+- [x] 只允许恢复非敏感内容。
+- [x] 必要时启动后询问用户是否恢复。
+
+验收标准：
+
+- 敏感内容永不自动恢复。
+- 默认行为保持隐私优先。
+
+---
+
+### Phase 10 — 测试与质量门槛
+
+#### TODO 10.1 — 隐私测试
+
+任务：
+
+- [x] Pasteboard 类型策略测试。
+- [x] 敏感文本检测测试。
+- [x] 忽略 App 测试。
+- [x] 暂停记录测试。
+
+验收标准：
+
+- 隐私测试通过。
+- 测试包含正例和反例。
+
+#### TODO 10.2 — 存储测试
+
+任务：
+
+- [x] 插入 / 列表测试。
+- [x] 去重测试。
+- [x] 固定 / 删除 / 清空测试。
+- [x] 保留期清理测试。
+- [x] repository 重建后的持久化测试。
+
+验收标准：
+
+- 存储测试通过。
+- 历史记录可跨 repository 初始化保留。
+
+#### TODO 10.3 — 搜索测试
+
+任务：
+
+- [x] 空查询测试。
+- [x] 文本查询测试。
+- [x] 类型过滤测试。
+- [x] 固定过滤测试。
+- [x] 排序测试。
+
+验收标准：
+
+- 搜索测试通过。
+- 结果确定且可复现。
+
+#### TODO 10.4 — UI 冒烟检查
+
+任务：
+
+- [x] App 可启动。
+- [x] 菜单栏 UI 可打开。
+- [x] 主历史窗口可打开。
+- [x] 设置窗口可打开。
+- [x] 基础操作已绑定。
+
+验收标准：
+
+- 如果没有自动化 UI 测试，Codex 必须报告手动冒烟测试步骤。
+
+---
+
+## 11. 推荐构建与测试命令
+
+Codex 必须先检查仓库实际命令。以下命令只是候选。
+
+```bash
+# 如果是 Swift Package
+swift build
+swift test
+
+# 如果是 Xcode 项目，请先检查实际 scheme 名称
+xcodebuild -scheme ClipDock -configuration Debug build
+xcodebuild -scheme ClipDock -configuration Debug test
+
+# 需要时再清理
+xcodebuild clean -scheme ClipDock
+```
+
+如果当前环境无法运行 Xcode：
+
+```text
+本环境无法完成 macOS/Xcode 构建验证。请在 macOS + Xcode 环境运行：
+<准确命令>
+```
+
+不要把“无法运行”写成“已通过”。
+
+---
+
+## 12. 完成定义
+
+一个 TODO 只有在以下条件满足时才算完成：
+
+- 代码已实现。
+- 可用的构建或静态检查已运行。
+- 可用测试已运行并通过。
+- 隐私行为没有被削弱。
+- 改动范围最小且与 TODO 对齐。
+- 破坏性操作有确认机制，或明显是用户主动触发。
+- 已知限制已记录。
+
+MVP 完成定义：
+
+- App 能记录允许保存的剪贴板内容。
+- App 能忽略敏感内容和被屏蔽内容。
+- 历史记录重启后仍然存在。
+- 用户能搜索和恢复历史。
+- 用户能固定、删除、清空历史。
+- 用户能暂停记录。
+- 用户能配置基础隐私和历史设置。
+- 核心隐私、存储、搜索测试通过。
+
+---
+
+## 13. Codex 不应实现的内容
+
+除非用户后来明确要求，否则不要实现：
+
+- 云同步。
+- 用户账户。
+- 数据分析或埋点。
+- 远程日志。
+- 上传剪贴板内容。
+- AI 处理剪贴板内容。
+- 团队剪贴板。
+- OCR。
+- 插件系统。
+- 复杂导入 / 导出功能。
+- 与第三方服务集成。
+
+---
+
+## 14. 给 Codex 的第一条启动 Prompt
+
+把本文件放到仓库根目录后，先给 Codex 输入：
+
+```text
+请阅读 AGENTS.md，并执行 TODO 0.1。审计当前仓库，判断项目类型、已有构建/测试命令、代码结构和最小安全实现路径。除非审计必须，否则不要修改文件。完成后用 AGENTS.md 规定的汇报格式返回结果，并等待我确认。
+```
+
+确认计划后，再输入：
+
+```text
+继续执行 TODO 0.2 和 TODO 1.1。保持改动最小，优先复用现有结构。完成后运行可用验证命令，并汇报修改文件、执行命令、构建/测试状态和剩余 TODO。
+```
+
+---
+
+## 15. Codex 每次汇报格式
+
+每次完成任务后，必须使用以下格式：
+
+```text
+已完成 TODO：
+- TODO X.Y — <标题>
+
+修改文件：
+- path/to/file.swift — <修改原因>
+
+执行命令：
+- <command> — 通过 / 失败 / 当前环境不可用
+
+验证结果：
+- <构建、测试、静态检查结果>
+
+App 自动重启状态：
+- <已重启 / 未重启及原因>
+
+已知限制：
+- <限制或风险，没有则写“无”>
+
+下一步建议：
+- TODO X.Y — <标题>
+```
+
+---
+
+## 16. 实现优先级提醒
+
+ClipDock 的核心不是“尽可能记录所有内容”，而是：
+
+```text
+只记录用户真正需要、且隐私规则允许保存的内容。
+```
+
+任何可能导致敏感内容误存、误恢复、误粘贴的实现，都应默认关闭、默认忽略或要求用户明确确认。
