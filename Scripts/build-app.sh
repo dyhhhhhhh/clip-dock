@@ -14,6 +14,8 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 SOURCE_BINARY="$BUILD_DIR/$CONFIGURATION/$APP_NAME"
 ICONSET_DIR="$ROOT_DIR/Packaging/Assets/AppIcon.iconset"
 ICON_FILE="$ROOT_DIR/Packaging/Assets/AppIcon.icns"
+MENU_BAR_ICON_FILE="$ROOT_DIR/Packaging/Assets/Images/MenuBarIconTemplate.png"
+MENU_BAR_STATUS_ICON_FILE="$ROOT_DIR/Packaging/Assets/Images/MenuBarIconStatusTemplate.png"
 
 cd "$ROOT_DIR"
 
@@ -28,6 +30,12 @@ cp "$SOURCE_BINARY" "$MACOS_DIR/$APP_NAME"
 chmod 755 "$MACOS_DIR/$APP_NAME"
 cp "$ROOT_DIR/Packaging/Info.plist" "$CONTENTS_DIR/Info.plist"
 cp "$ICON_FILE" "$RESOURCES_DIR/AppIcon.icns"
+if [[ -f "$MENU_BAR_ICON_FILE" ]]; then
+  cp "$MENU_BAR_ICON_FILE" "$RESOURCES_DIR/MenuBarIconTemplate.png"
+fi
+if [[ -f "$MENU_BAR_STATUS_ICON_FILE" ]]; then
+  cp "$MENU_BAR_STATUS_ICON_FILE" "$RESOURCES_DIR/MenuBarIconStatusTemplate.png"
+fi
 printf "APPL????" > "$CONTENTS_DIR/PkgInfo"
 
 if [[ "$SIGN_APP" != "0" ]]; then

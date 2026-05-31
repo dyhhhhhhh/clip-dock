@@ -17,6 +17,7 @@ struct SettingsView: View {
         .environment(\.settingsChoiceMenuID, $activeChoiceMenuID)
         .padding(14)
         .clipDockPanel()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.settings.root")
         .overlayPreferenceValue(SettingsChoiceMenuBoundsPreferenceKey.self) { boundsByID in
             GeometryReader { proxy in
@@ -31,6 +32,7 @@ struct SettingsView: View {
         }
         .onAppear {
             appState.refreshGlobalHotKeyStatus()
+            appState.refreshAutoPastePermissionStatus()
         }
         .onChange(of: appState.settings) {
             appState.saveSettings()
@@ -40,6 +42,7 @@ struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             appState.refreshGlobalHotKeyStatus()
+            appState.refreshAutoPastePermissionStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
             activeChoiceMenuID = nil
@@ -102,20 +105,18 @@ struct GeneralSettingsView: View {
                 }
                 ShortcutSettingsBlock()
             }
-            SettingsCard(title: "默认行为") {
-                SettingsRow("默认粘贴行为", zIndex: 10, dismissesChoiceMenu: false) {
+            SettingsCard(title: "粘贴行为") {
+                SettingsRow("默认恢复动作", zIndex: 10, dismissesChoiceMenu: false) {
                     SettingsChoiceMenu(
                         selection: $appState.settings.defaultPasteBehavior,
                         choices: PasteBehavior.settingsChoices,
                         identifier: "clipdock.settings.general.defaultPasteBehavior",
                     )
                 }
-                SettingsRow("自动粘贴") {
-                    SettingsToggle(isOn: $appState.settings.autoPasteEnabled, identifier: "clipdock.settings.general.autoPasteEnabled")
-                }
+                AutoPasteStatusBlock()
                 SettingsActionRow {
                     Button {
-                        appState.requestGlobalHotKeyPermission()
+                        appState.requestAccessibilityPermission()
                     } label: {
                         Label("请求辅助功能权限", systemImage: "hand.raised")
                     }
@@ -127,12 +128,13 @@ struct GeneralSettingsView: View {
                     }
                     .accessibilityIdentifier("clipdock.settings.general.systemSettings")
                 }
-                SettingsNote("辅助功能权限仅用于自动粘贴；未授权时仍可恢复到系统剪贴板。")
+                SettingsNote("默认恢复动作影响菜单栏、详情页按钮和 Enter；Launcher 与历史列表双击始终视为显式粘贴。")
                 SettingsRow("启动后恢复最近剪贴板") {
                     SettingsToggle(isOn: $appState.settings.restoreLastClipboardOnStartup, identifier: "clipdock.settings.general.restoreLastClipboardOnStartup")
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.settings.section.general")
     }
 }
@@ -179,6 +181,7 @@ struct HistorySettingsView: View {
                 SettingsNote("收藏项默认不会被自动清理。")
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.settings.section.history")
     }
 }
@@ -201,19 +204,9 @@ struct PrivacySettingsView: View {
             }
             SettingsCard(title: "应用黑名单") {
                 ForEach(Array(appState.settings.ignoredBundleIdentifiers).sorted(), id: \.self) { bundleID in
-                    HStack(spacing: 12) {
-                        Text(bundleID)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(Design.muted)
-                            .lineLimit(1)
-                        Spacer()
-                        Button("移除") {
-                            appState.settings.ignoredBundleIdentifiers.remove(bundleID)
-                        }
-                        .buttonStyle(SettingsActionButtonStyle())
-                        .accessibilityIdentifier("clipdock.settings.privacy.removeIgnoredApp")
+                    IgnoredAppRow(bundleIdentifier: bundleID) {
+                        appState.settings.ignoredBundleIdentifiers.remove(bundleID)
                     }
-                    .frame(minHeight: 30)
                 }
                 SettingsInputActionRow(
                     placeholder: "Bundle Identifier",
@@ -222,8 +215,9 @@ struct PrivacySettingsView: View {
                     identifier: "clipdock.settings.privacy.ignoredBundleIdentifier",
                     buttonIdentifier: "clipdock.settings.privacy.addIgnoredApp",
                 ) {
-                    guard !newBundleID.isEmpty else { return }
-                    appState.settings.ignoredBundleIdentifiers.insert(newBundleID)
+                    let bundleID = newBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !bundleID.isEmpty else { return }
+                    appState.settings.ignoredBundleIdentifiers.insert(bundleID)
                     newBundleID = ""
                 }
             }
@@ -240,6 +234,7 @@ struct PrivacySettingsView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.settings.section.privacy")
         .confirmationDialog("清空最近 1 小时历史？", isPresented: $confirmingClearRecent) {
             Button("清空最近 1 小时", role: .destructive) {
@@ -255,6 +250,49 @@ struct PrivacySettingsView: View {
         } message: {
             Text("此操作会删除本地历史记录，无法撤销。")
         }
+    }
+}
+
+private struct IgnoredAppRow: View {
+    let bundleIdentifier: String
+    let remove: () -> Void
+
+    var body: some View {
+        let presentation = SourceAppPresentation.resolve(bundleIdentifier: bundleIdentifier)
+
+        HStack(spacing: 10) {
+            Image(nsImage: presentation.icon)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 28, height: 28)
+                .background(Design.surface2)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Design.hairlineStrong.opacity(0.65), lineWidth: 1),
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.name)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Design.ink)
+                    .lineLimit(1)
+                Text(bundleIdentifier)
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Design.muted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            Button("移除", action: remove)
+                .buttonStyle(SettingsActionButtonStyle())
+                .accessibilityIdentifier("clipdock.settings.privacy.removeIgnoredApp")
+        }
+        .frame(minHeight: 38)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clipdock.settings.privacy.ignoredApp.\(bundleIdentifier)")
+        .accessibilityLabel("\(presentation.name)，\(bundleIdentifier)")
     }
 }
 
@@ -304,7 +342,99 @@ struct AdvancedSettingsView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.settings.section.advanced")
+    }
+}
+
+struct AutoPasteStatusBlock: View {
+    @EnvironmentObject private var appState: AppState
+
+    private var status: AutoPasteSettingsStatus {
+        AutoPasteSettingsStatus(permissionGranted: appState.autoPastePermissionGranted)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SettingsRow("双击列表项") {
+                AutoPasteStatusBadge(status: status)
+            }
+            SettingsNote(status.note)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clipdock.settings.general.autoPasteStatus")
+    }
+}
+
+private enum AutoPasteSettingsStatus {
+    case needsPermission
+    case ready
+
+    init(permissionGranted: Bool) {
+        self = permissionGranted ? .ready : .needsPermission
+    }
+
+    var label: String {
+        switch self {
+        case .needsPermission:
+            "双击需要辅助功能权限"
+        case .ready:
+            "双击可粘贴到光标位置"
+        }
+    }
+
+    var note: String {
+        switch self {
+        case .needsPermission:
+            "双击已视为显式粘贴，但 macOS 还未授权 ClipDock 发送 Cmd+V；此时会降级为恢复到系统剪贴板。"
+        case .ready:
+            "Launcher 和历史列表双击会恢复剪贴板，并向当前前台应用发送 Cmd+V。"
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .needsPermission:
+            "hand.raised.fill"
+        case .ready:
+            "keyboard.fill"
+        }
+    }
+
+    var foregroundStyle: Color {
+        switch self {
+        case .ready:
+            Design.ink
+        case .needsPermission:
+            .orange
+        }
+    }
+
+    var strokeStyle: Color {
+        switch self {
+        case .ready:
+            Design.primary.opacity(0.45)
+        case .needsPermission:
+            .orange.opacity(0.42)
+        }
+    }
+}
+
+private struct AutoPasteStatusBadge: View {
+    let status: AutoPasteSettingsStatus
+
+    var body: some View {
+        Label(status.label, systemImage: status.systemImageName)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(status.foregroundStyle)
+            .padding(.horizontal, 10)
+            .frame(height: SettingsMetrics.controlHeight)
+            .background(Design.surface2)
+            .clipShape(RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: SettingsMetrics.controlRadius)
+                    .stroke(status.strokeStyle, lineWidth: 1),
+            )
     }
 }
 

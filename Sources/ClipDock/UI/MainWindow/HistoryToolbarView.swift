@@ -28,6 +28,7 @@ struct HistoryToolbar: View {
         .padding(.horizontal, 16)
         .frame(height: 56)
         .background(Design.surface1)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.history.toolbar")
     }
 

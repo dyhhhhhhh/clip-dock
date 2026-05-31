@@ -10,6 +10,7 @@ public protocol PasteboardAdapter: AnyObject {
     func readImageData() -> Data?
     func writeString(_ value: String)
     func writeURL(_ value: URL)
+    func writeFileURL(_ value: URL)
     func writeImageData(_ data: Data)
 }
 
@@ -69,6 +70,13 @@ public final class AppKitPasteboardAdapter: PasteboardAdapter {
         pasteboard.clearContents()
         pasteboard.setString(value.absoluteString, forType: .URL)
         pasteboard.setString(value.absoluteString, forType: .string)
+    }
+
+    public func writeFileURL(_ value: URL) {
+        pasteboard.clearContents()
+        pasteboard.setString(value.absoluteString, forType: .fileURL)
+        pasteboard.setString(value.absoluteString, forType: .URL)
+        pasteboard.setString(value.path, forType: .string)
     }
 
     public func writeImageData(_ data: Data) {

@@ -20,6 +20,12 @@ struct HistoryListPane: View {
                         HistoryTableRow(
                             item: item,
                             isSelected: item.id == selectedID,
+                            select: {
+                                select(item)
+                            },
+                            restore: {
+                                restore(item)
+                            },
                             toggleFavorite: {
                                 toggleFavorite(item)
                             },
@@ -31,13 +37,6 @@ struct HistoryListPane: View {
                             },
                         )
                         .equatable()
-                        .contentShape(Rectangle())
-                        .onImmediatePress {
-                            select(item)
-                        }
-                        .onTapGesture(count: 2) {
-                            restore(item)
-                        }
                         Divider()
                     }
                     if items.isEmpty {
@@ -72,6 +71,8 @@ struct HistoryTableHeader: View {
 struct HistoryTableRow: View, Equatable {
     let item: ClipItem
     let isSelected: Bool
+    let select: () -> Void
+    let restore: () -> Void
     let toggleFavorite: () -> Void
     let openExternally: () -> Void
     let revealInFinder: () -> Void
@@ -106,12 +107,13 @@ struct HistoryTableRow: View, Equatable {
                 .layoutPriority(1)
 
             Group {
-                if isHovering {
+                if isHovering || ProcessInfo.processInfo.environment["CLIPDOCK_UI_TEST_MODE"] == "1" {
                     HStack(spacing: 5) {
                         if let openSystemImageName = item.openSystemImageName {
                             rowIconButton(
                                 systemImage: openSystemImageName,
                                 title: item.openActionTitle,
+                                identifier: "clipdock.history.row.\(item.id.uuidString).open",
                                 action: openExternally,
                             )
                         }
@@ -119,6 +121,7 @@ struct HistoryTableRow: View, Equatable {
                             rowIconButton(
                                 systemImage: "folder",
                                 title: "在 Finder 中显示",
+                                identifier: "clipdock.history.row.\(item.id.uuidString).finder",
                                 action: revealInFinder,
                             )
                         }
@@ -126,6 +129,7 @@ struct HistoryTableRow: View, Equatable {
                             systemImage: item.isFavorite ? "star.fill" : "star",
                             title: item.isFavorite ? "取消收藏" : "收藏",
                             isActive: item.isFavorite,
+                            identifier: "clipdock.history.row.\(item.id.uuidString).favorite",
                             action: toggleFavorite,
                         )
                     }
@@ -150,9 +154,28 @@ struct HistoryTableRow: View, Equatable {
         .padding(.horizontal, 10)
         .frame(minHeight: 50)
         .background(rowBackground)
+        .overlay(alignment: .leading) {
+            GeometryReader { proxy in
+                HistoryRowClickCapture(
+                    singleClick: select,
+                    doubleClick: restore,
+                    hoverChanged: { hovering in
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            isHovering = hovering
+                        }
+                    },
+                )
+                .frame(
+                    width: max(0, proxy.size.width - HistoryTableMetrics.actionWidth),
+                    height: proxy.size.height,
+                    alignment: .leading,
+                )
+            }
+        }
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isHovering && !isSelected ? Design.hairline.opacity(0.95) : Color.clear, lineWidth: 1),
+                .stroke(isHovering && !isSelected ? Design.hairline.opacity(0.95) : Color.clear, lineWidth: 1)
+                .allowsHitTesting(false),
         )
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
@@ -162,6 +185,8 @@ struct HistoryTableRow: View, Equatable {
                 isHovering = hovering
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clipdock.history.row.\(item.id.uuidString)")
     }
 
     private var rowBackground: some View {
@@ -202,7 +227,13 @@ struct HistoryTableRow: View, Equatable {
         }
     }
 
-    private func rowIconButton(systemImage: String, title: String, isActive: Bool = false, action: @escaping () -> Void) -> some View {
+    private func rowIconButton(
+        systemImage: String,
+        title: String,
+        isActive: Bool = false,
+        identifier: String,
+        action: @escaping () -> Void,
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .semibold))
@@ -218,6 +249,70 @@ struct HistoryTableRow: View, Equatable {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
+    }
+}
+
+private struct HistoryRowClickCapture: NSViewRepresentable {
+    let singleClick: () -> Void
+    let doubleClick: () -> Void
+    let hoverChanged: (Bool) -> Void
+
+    func makeNSView(context: Context) -> HistoryRowClickCaptureView {
+        let view = HistoryRowClickCaptureView()
+        view.singleClick = singleClick
+        view.doubleClick = doubleClick
+        view.hoverChanged = hoverChanged
+        return view
+    }
+
+    func updateNSView(_ nsView: HistoryRowClickCaptureView, context: Context) {
+        nsView.singleClick = singleClick
+        nsView.doubleClick = doubleClick
+        nsView.hoverChanged = hoverChanged
+    }
+}
+
+private final class HistoryRowClickCaptureView: NSView {
+    var singleClick: () -> Void = {}
+    var doubleClick: () -> Void = {}
+    var hoverChanged: (Bool) -> Void = { _ in }
+
+    private var trackingAreaToken: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingAreaToken {
+            removeTrackingArea(trackingAreaToken)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil,
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaToken = trackingArea
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 {
+            doubleClick()
+        } else {
+            singleClick()
+        }
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        hoverChanged(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hoverChanged(false)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
     }
 }
 

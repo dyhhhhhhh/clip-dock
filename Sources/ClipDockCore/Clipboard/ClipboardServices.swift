@@ -80,14 +80,17 @@ public struct ClipboardReader {
         }
         if let imageData = adapter.readImageData(), settings.saveImages {
             let payload = ClipPayload.image(ImagePayload(byteCount: imageData.count))
-            let item = makeItem(
+            var item = makeItem(
                 type: .image,
                 previewText: "图片 • \(ByteCountFormatter.string(fromByteCount: Int64(imageData.count), countStyle: .file))",
                 payload: payload,
                 source: snapshot.sourceApp,
                 byteSize: imageData.count,
             )
-            return ClipboardCaptureCandidate(item: item, imageData: imageData)
+            item.contentHash = Hashing.sha256(imageData)
+            return privacyEngine.evaluate(snapshot: contentSnapshot(for: item, source: snapshot.sourceApp), settings: settings).isAllowed
+                ? ClipboardCaptureCandidate(item: item, imageData: imageData)
+                : nil
         }
         if let text = adapter.readString(), !text.isEmpty {
             let candidate = makeItem(type: .text, previewText: text, payload: .text(text), source: snapshot.sourceApp)
@@ -140,10 +143,12 @@ public struct ClipboardWriter {
         case let .text(value):
             adapter.writeString(value)
         case let .url(value):
-            guard let url = URL(string: value) else { throw ClipboardError.invalidURL }
+            guard let url = URL(string: value), let scheme = url.scheme, !scheme.isEmpty else {
+                throw ClipboardError.invalidURL
+            }
             adapter.writeURL(url)
         case let .fileURL(value):
-            adapter.writeURL(URL(fileURLWithPath: value))
+            adapter.writeFileURL(URL(fileURLWithPath: value))
         case .image:
             if let payloadRef = item.payloadRef,
                let data = try? Data(contentsOf: URL(fileURLWithPath: payloadRef))
@@ -177,6 +182,11 @@ public enum PasteResult: Equatable {
     case restoredToClipboard
     case autoPasted
     case autoPasteUnavailable
+}
+
+public enum AutoPasteIntent: Equatable, Sendable {
+    case settingsControlled
+    case explicitUserPaste
 }
 
 public struct PasteController {
@@ -213,11 +223,18 @@ public struct PasteController {
     public func restore(
         _ item: ClipItem,
         settings: UserSettings,
-        forceAutoPaste: Bool = false,
+        autoPasteIntent: AutoPasteIntent = .settingsControlled,
         prepareForAutoPaste: (() -> Void)? = nil,
     ) throws -> PasteResult {
         try writer.restore(item)
-        guard forceAutoPaste || settings.autoPasteEnabled || settings.defaultPasteBehavior == .autoPasteWhenAllowed else {
+        let userAllowsAutoPaste = settings.defaultPasteBehavior == .autoPasteWhenAllowed
+        let shouldAutoPaste = switch autoPasteIntent {
+        case .settingsControlled:
+            userAllowsAutoPaste
+        case .explicitUserPaste:
+            true
+        }
+        guard shouldAutoPaste else {
             return .restoredToClipboard
         }
         guard accessibility.hasAccessibilityPermission else {

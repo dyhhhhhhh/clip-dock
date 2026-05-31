@@ -5,6 +5,15 @@ struct SourceAppPresentation {
     var name: String
     var icon: NSImage
 
+    private static let knownAppNamesByBundleIdentifier: [String: String] = [
+        "com.1password.1password": "1Password",
+        "com.agilebits.onepassword7": "1Password 7",
+        "com.apple.keychainaccess": "Keychain Access",
+        "com.bitwarden.desktop": "Bitwarden",
+        "com.dashlane.dashlane": "Dashlane",
+        "com.lastpass.lastpass": "LastPass",
+        "com.yubico.yubioath": "Yubico Authenticator",
+    ]
     private static let iconCache = NSCache<NSString, NSImage>()
 
     static func resolve(_ sourceApp: SourceAppMetadata?) -> SourceAppPresentation {
@@ -13,6 +22,34 @@ struct SourceAppPresentation {
             name: normalized.name,
             icon: icon(forBundleIdentifier: normalized.bundleIdentifier),
         )
+    }
+
+    static func resolve(bundleIdentifier: String) -> SourceAppPresentation {
+        let normalizedBundleIdentifier = bundleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return SourceAppPresentation(
+            name: applicationName(forBundleIdentifier: normalizedBundleIdentifier)
+                ?? knownAppName(forBundleIdentifier: normalizedBundleIdentifier)
+                ?? fallbackName(forBundleIdentifier: normalizedBundleIdentifier),
+            icon: icon(forBundleIdentifier: normalizedBundleIdentifier),
+        )
+    }
+
+    fileprivate static func applicationName(forBundleIdentifier bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier,
+              let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+        else {
+            return nil
+        }
+
+        let bundle = Bundle(url: appURL)
+        let localizedName = bundle?.localizedInfoDictionary?["CFBundleDisplayName"] as? String
+            ?? bundle?.localizedInfoDictionary?["CFBundleName"] as? String
+        let name = localizedName
+            ?? bundle?.infoDictionary?["CFBundleDisplayName"] as? String
+            ?? bundle?.infoDictionary?["CFBundleName"] as? String
+            ?? appURL.deletingPathExtension().lastPathComponent
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedName.isEmpty ? nil : trimmedName
     }
 
     private static func icon(forBundleIdentifier bundleIdentifier: String?) -> NSImage {
@@ -33,6 +70,22 @@ struct SourceAppPresentation {
         iconCache.setObject(icon, forKey: cacheKey)
         return icon
     }
+
+    private static func knownAppName(forBundleIdentifier bundleIdentifier: String) -> String? {
+        knownAppNamesByBundleIdentifier[bundleIdentifier.lowercased()]
+    }
+
+    private static func fallbackName(forBundleIdentifier bundleIdentifier: String) -> String {
+        let lastComponent = bundleIdentifier
+            .split(separator: ".")
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lastComponent, !lastComponent.isEmpty else {
+            return "未知应用"
+        }
+        return lastComponent
+    }
 }
 
 private struct NormalizedSourceApp {
@@ -51,7 +104,9 @@ private struct NormalizedSourceApp {
             return
         }
 
-        name = Self.normalizedName(rawName) ?? "未知"
+        name = Self.normalizedName(rawName)
+            ?? SourceAppPresentation.applicationName(forBundleIdentifier: rawBundleIdentifier)
+            ?? "未知"
         bundleIdentifier = rawBundleIdentifier
     }
 

@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     @Published var lastError: String?
     @Published var lastPasteResult: PasteResult?
     @Published var debugPasteboardTypes: [String] = []
+    @Published private(set) var autoPastePermissionGranted = false
     @Published private(set) var globalHotKeyStatus: GlobalHotKeyStatus = .unavailable
     @Published private(set) var globalShortcutIsValid = true
 
@@ -43,6 +44,7 @@ final class AppState: ObservableObject {
         settingsStore: SettingsStore,
         adapter: PasteboardAdapter,
         storagePath: String,
+        pasteController: PasteController? = nil,
     ) {
         let loadedSettings = settingsStore.load()
         self.repository = repository
@@ -53,13 +55,15 @@ final class AppState: ObservableObject {
         storageStats = .empty(maxHistoryCount: loadedSettings.maxHistoryCount)
         self.storagePath = storagePath
         reader = ClipboardReader(adapter: adapter)
-        writer = ClipboardWriter(adapter: adapter)
-        pasteController = PasteController(writer: ClipboardWriter(adapter: adapter))
+        let writer = ClipboardWriter(adapter: adapter)
+        self.writer = writer
+        self.pasteController = pasteController ?? PasteController(writer: writer)
         monitor = ClipboardMonitor(adapter: adapter, pollingInterval: loadedSettings.pollingInterval)
         searchService = ClipSearchService(repository: repository)
         startTrackingPasteTargetApplication()
         refresh()
         restoreLastClipboardOnStartupIfNeeded()
+        refreshAutoPastePermissionStatus()
         startMonitoring()
         startGlobalHotKey()
     }
@@ -69,22 +73,47 @@ final class AppState: ObservableObject {
             let directory = try storageDirectory()
             let payloadStore = try PayloadStore(directory: directory.appendingPathComponent("Payloads", isDirectory: true))
             let repository = try SQLiteClipRepository(directory: directory, payloadStore: payloadStore)
+            let adapter = AppKitPasteboardAdapter()
             return AppState(
                 repository: repository,
                 payloadStore: payloadStore,
-                settingsStore: UserDefaultsSettingsStore(),
-                adapter: AppKitPasteboardAdapter(),
+                settingsStore: UserDefaultsSettingsStore.configured(),
+                adapter: adapter,
                 storagePath: directory.path,
+                pasteController: uiQAPasteControllerIfNeeded(adapter: adapter),
             )
         } catch {
+            let adapter = AppKitPasteboardAdapter()
             return AppState(
                 repository: InMemoryClipRepository(),
                 payloadStore: nil,
-                settingsStore: UserDefaultsSettingsStore(),
-                adapter: AppKitPasteboardAdapter(),
+                settingsStore: UserDefaultsSettingsStore.configured(),
+                adapter: adapter,
                 storagePath: "In-memory fallback",
+                pasteController: uiQAPasteControllerIfNeeded(adapter: adapter),
             )
         }
+    }
+
+    private static func uiQAPasteControllerIfNeeded(adapter: PasteboardAdapter) -> PasteController? {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["CLIPDOCK_UI_TEST_MODE"] == "1",
+              let markerPath = environment["CLIPDOCK_UI_QA_PASTE_MARKER"],
+              !markerPath.isEmpty
+        else {
+            return nil
+        }
+        return PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: StaticAccessibilityChecker(granted: true),
+            autoPasteDelay: 0,
+            pasteCommand: {
+                FileManager.default.createFile(
+                    atPath: markerPath,
+                    contents: Data("autoPasted\n".utf8),
+                )
+            },
+        )
     }
 
     private static func storageDirectory() throws -> URL {
@@ -185,8 +214,17 @@ final class AppState: ObservableObject {
         globalHotKeyStatus = hotKeyController?.status ?? .unavailable
     }
 
+    func refreshAutoPastePermissionStatus() {
+        autoPastePermissionGranted = AppKitAccessibilityChecker().hasAccessibilityPermission
+    }
+
     func requestGlobalHotKeyPermission() {
+        requestAccessibilityPermission()
+    }
+
+    func requestAccessibilityPermission() {
         GlobalHotKeyController.requestAccessibilityPermissionPrompt()
+        refreshAutoPastePermissionStatus()
         refreshGlobalHotKeyStatus()
     }
 
@@ -203,7 +241,7 @@ final class AppState: ObservableObject {
         }
     }
 
-    func openLauncher() {
+    func openLauncher(enableTransientDismissal: Bool = true) {
         let hostingView = NSHostingView(rootView: LauncherView().environmentObject(self))
         if launcherWindow == nil {
             let panel = LauncherPanel(
@@ -219,20 +257,26 @@ final class AppState: ObservableObject {
             panel.level = .floating
             panel.isMovable = true
             panel.isMovableByWindowBackground = true
-            panel.hidesOnDeactivate = true
-            panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
             panel.onDismissRequest = { [weak self] in
                 self?.closeLauncher()
             }
             panel.center()
             launcherWindow = panel
         }
+        launcherWindow?.hidesOnDeactivate = enableTransientDismissal
+        launcherWindow?.collectionBehavior = enableTransientDismissal
+            ? [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
+            : [.moveToActiveSpace, .fullScreenAuxiliary]
         launcherWindow?.contentView = hostingView
         NSApp.activate()
         launcherWindow?.makeKeyAndOrderFront(nil)
         launcherWindow?.orderFrontRegardless()
-        DispatchQueue.main.async { [weak launcherWindow] in
-            launcherWindow?.beginOutsideClickMonitoring()
+        if enableTransientDismissal {
+            DispatchQueue.main.async { [weak launcherWindow] in
+                launcherWindow?.beginOutsideClickMonitoring()
+            }
+        } else {
+            launcherWindow?.stopOutsideClickMonitoring()
         }
     }
 
@@ -307,13 +351,21 @@ final class AppState: ObservableObject {
     }
 
     func restoreAndAutoPaste(_ item: ClipItem?) {
+        restoreWithPasteIntent(item, autoPasteIntent: .settingsControlled)
+    }
+
+    func restoreForExplicitPaste(_ item: ClipItem?) {
+        restoreWithPasteIntent(item, autoPasteIntent: .explicitUserPaste)
+    }
+
+    private func restoreWithPasteIntent(_ item: ClipItem?, autoPasteIntent: AutoPasteIntent) {
         guard let item else { return }
         let targetApplication = bestPasteTargetApplication()
         do {
             lastPasteResult = try pasteController.restore(
                 item,
                 settings: settings,
-                forceAutoPaste: true,
+                autoPasteIntent: autoPasteIntent,
                 prepareForAutoPaste: {
                     targetApplication?.activate()
                 },
@@ -631,7 +683,7 @@ final class LauncherPanel: NSPanel {
         onDismissRequest?()
     }
 
-    private func stopOutsideClickMonitoring() {
+    func stopOutsideClickMonitoring() {
         if let localMouseMonitor {
             NSEvent.removeMonitor(localMouseMonitor)
             self.localMouseMonitor = nil
@@ -641,4 +693,10 @@ final class LauncherPanel: NSPanel {
             self.globalMouseMonitor = nil
         }
     }
+}
+
+private struct StaticAccessibilityChecker: AccessibilityChecking {
+    let granted: Bool
+
+    var hasAccessibilityPermission: Bool { granted }
 }

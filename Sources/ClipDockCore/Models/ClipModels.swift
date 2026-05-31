@@ -240,13 +240,15 @@ public struct UserSettings: Codable, Equatable, Sendable {
         recordingPaused = try container.decodeIfPresent(Bool.self, forKey: .recordingPaused) ?? defaults.recordingPaused
         ignoreSensitiveContent = try container.decodeIfPresent(Bool.self, forKey: .ignoreSensitiveContent) ?? defaults.ignoreSensitiveContent
         restoreLastClipboardOnStartup = try container.decodeIfPresent(Bool.self, forKey: .restoreLastClipboardOnStartup) ?? defaults.restoreLastClipboardOnStartup
-        autoPasteEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoPasteEnabled) ?? defaults.autoPasteEnabled
+        let legacyAutoPasteEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoPasteEnabled) ?? defaults.autoPasteEnabled
+        autoPasteEnabled = false
         ignoredBundleIdentifiers = try container.decodeIfPresent(Set<String>.self, forKey: .ignoredBundleIdentifiers) ?? defaults.ignoredBundleIdentifiers
         lowPowerPolling = try container.decodeIfPresent(Bool.self, forKey: .lowPowerPolling) ?? defaults.lowPowerPolling
         launchAtLogin = try container.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? defaults.launchAtLogin
         let storedGlobalShortcut = try container.decodeIfPresent(String.self, forKey: .globalShortcut) ?? defaults.globalShortcut
         globalShortcut = KeyboardShortcutSpec.parse(storedGlobalShortcut) == nil ? defaults.globalShortcut : storedGlobalShortcut
-        defaultPasteBehavior = try container.decodeIfPresent(PasteBehavior.self, forKey: .defaultPasteBehavior) ?? defaults.defaultPasteBehavior
+        let storedDefaultPasteBehavior = try container.decodeIfPresent(PasteBehavior.self, forKey: .defaultPasteBehavior) ?? defaults.defaultPasteBehavior
+        defaultPasteBehavior = legacyAutoPasteEnabled ? .autoPasteWhenAllowed : storedDefaultPasteBehavior
         deduplicationStrategy = try container.decodeIfPresent(DeduplicationStrategy.self, forKey: .deduplicationStrategy) ?? defaults.deduplicationStrategy
     }
 }

@@ -58,6 +58,7 @@ struct DetailPaneView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .padding(20)
         .background(Design.canvas)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.history.detailPane")
     }
 

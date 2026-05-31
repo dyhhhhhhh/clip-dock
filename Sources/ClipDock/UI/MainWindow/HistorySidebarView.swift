@@ -16,8 +16,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "doc.on.clipboard.fill")
-                    .foregroundStyle(Design.primary)
+                ClipDockBrandIcon(size: 18)
                 Text("ClipDock")
                     .font(.headline)
             }
@@ -78,6 +77,7 @@ struct SidebarView: View {
             .padding(.bottom, 12)
         }
         .background(Design.surface1)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.history.sidebar")
     }
 }

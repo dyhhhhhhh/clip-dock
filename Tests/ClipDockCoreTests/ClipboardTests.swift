@@ -1,4 +1,5 @@
 @testable import ClipDockCore
+import AppKit
 import XCTest
 
 final class ClipboardTests: XCTestCase {
@@ -58,6 +59,16 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(adapter.writtenURL?.absoluteString, "https://example.com")
     }
 
+    func testWriterRestoresFileURLAsFileURLType() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let writer = ClipboardWriter(adapter: adapter)
+        let path = "/Users/example/Documents/report.pdf"
+
+        try writer.restore(ClipItem.fixture(primaryType: .file, payload: .fileURL(path), previewText: path))
+
+        XCTAssertEqual(adapter.writtenFileURL?.path, path)
+    }
+
     func testReaderReturnsImagePayloadCandidateAndWriterRestoresImageData() throws {
         let adapter = FakePasteboardAdapter(changeCount: 1)
         adapter.declaredTypes = ["public.png"]
@@ -81,6 +92,52 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(adapter.writtenImageData, Data([4, 5, 6]))
     }
 
+    func testReaderRejectsImageWhenActualPayloadExceedsPrivacyLimit() {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        adapter.declaredTypes = ["public.png"]
+        adapter.estimatedByteSizeOverride = 0
+        adapter.imageDataValue = Data(repeating: 1, count: 9)
+        let reader = ClipboardReader(
+            adapter: adapter,
+            privacyEngine: PrivacyRuleEngine(maxAllowedBytes: 8),
+        )
+
+        XCTAssertNil(reader.readCaptureCandidate(settings: .defaults))
+    }
+
+    func testReaderHashesImageCandidatesFromPayloadBytes() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        adapter.declaredTypes = ["public.png"]
+        let reader = ClipboardReader(adapter: adapter)
+
+        adapter.imageDataValue = Data([1, 2, 3])
+        let first = try XCTUnwrap(reader.readCaptureCandidate(settings: .defaults))
+        adapter.imageDataValue = Data([3, 2, 1])
+        let second = try XCTUnwrap(reader.readCaptureCandidate(settings: .defaults))
+
+        XCTAssertNotEqual(first.item.contentHash, second.item.contentHash)
+    }
+
+    func testReaderSkipsImageWhenImageSavingIsDisabled() {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        adapter.declaredTypes = ["public.png"]
+        adapter.imageDataValue = Data([1, 2, 3])
+        var settings = UserSettings.defaults
+        settings.saveImages = false
+
+        XCTAssertNil(ClipboardReader(adapter: adapter).readCaptureCandidate(settings: settings))
+    }
+
+    func testReaderSkipsFileURLWhenFileURLSavingIsDisabled() {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        adapter.declaredTypes = ["public.file-url"]
+        adapter.fileURLValue = URL(fileURLWithPath: "/tmp/report.pdf")
+        var settings = UserSettings.defaults
+        settings.saveFileURLs = false
+
+        XCTAssertNil(ClipboardReader(adapter: adapter).readCaptureCandidate(settings: settings))
+    }
+
     func testPasteControllerKeepsAutoPasteDisabledByDefault() throws {
         let adapter = FakePasteboardAdapter(changeCount: 1)
         let controller = PasteController(writer: ClipboardWriter(adapter: adapter), accessibility: FakeAccessibilityChecker(granted: false))
@@ -91,7 +148,28 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(adapter.writtenString, "hello")
     }
 
-    func testPasteControllerCanForceAutoPasteForExplicitAction() throws {
+    func testPasteControllerSettingsControlledIntentDoesNotAutoPasteWhenUserHasNotEnabledIt() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let pasteCommandRecorder = PasteCommandRecorder()
+        let controller = PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: FakeAccessibilityChecker(granted: true),
+            autoPasteDelay: 0,
+            pasteCommand: { pasteCommandRecorder.record() },
+        )
+
+        let result = try controller.restore(
+            ClipItem.fixture(),
+            settings: .defaults,
+            autoPasteIntent: .settingsControlled,
+        )
+
+        XCTAssertEqual(result, .restoredToClipboard)
+        XCTAssertEqual(adapter.writtenString, "hello")
+        XCTAssertEqual(pasteCommandRecorder.count, 0)
+    }
+
+    func testPasteControllerExplicitUserPasteBypassesAutoPasteSettingWhenPermissionGranted() throws {
         let adapter = FakePasteboardAdapter(changeCount: 1)
         let pasteCommandRecorder = PasteCommandRecorder()
         var prepared = false
@@ -105,7 +183,7 @@ final class ClipboardTests: XCTestCase {
         let result = try controller.restore(
             ClipItem.fixture(),
             settings: .defaults,
-            forceAutoPaste: true,
+            autoPasteIntent: .explicitUserPaste,
             prepareForAutoPaste: { prepared = true },
         )
 
@@ -113,6 +191,179 @@ final class ClipboardTests: XCTestCase {
         XCTAssertEqual(adapter.writtenString, "hello")
         XCTAssertTrue(prepared)
         XCTAssertEqual(pasteCommandRecorder.count, 1)
+    }
+
+    func testPasteControllerExplicitUserPasteReportsUnavailableWhenPermissionIsMissing() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let pasteCommandRecorder = PasteCommandRecorder()
+        var prepared = false
+        let controller = PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: FakeAccessibilityChecker(granted: false),
+            autoPasteDelay: 0,
+            pasteCommand: { pasteCommandRecorder.record() },
+        )
+
+        let result = try controller.restore(
+            ClipItem.fixture(),
+            settings: .defaults,
+            autoPasteIntent: .explicitUserPaste,
+            prepareForAutoPaste: { prepared = true },
+        )
+
+        XCTAssertEqual(result, .autoPasteUnavailable)
+        XCTAssertEqual(adapter.writtenString, "hello")
+        XCTAssertFalse(prepared)
+        XCTAssertEqual(pasteCommandRecorder.count, 0)
+    }
+
+    func testPasteControllerSettingsControlledIntentAutoPastesWhenUserEnabledIt() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let pasteCommandRecorder = PasteCommandRecorder()
+        var prepared = false
+        var settings = UserSettings.defaults
+        settings.defaultPasteBehavior = .autoPasteWhenAllowed
+        let controller = PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: FakeAccessibilityChecker(granted: true),
+            autoPasteDelay: 0,
+            pasteCommand: { pasteCommandRecorder.record() },
+        )
+
+        let result = try controller.restore(
+            ClipItem.fixture(),
+            settings: settings,
+            autoPasteIntent: .settingsControlled,
+            prepareForAutoPaste: { prepared = true },
+        )
+
+        XCTAssertEqual(result, .autoPasted)
+        XCTAssertEqual(adapter.writtenString, "hello")
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(pasteCommandRecorder.count, 1)
+    }
+
+    func testPasteControllerSettingsControlledIntentIgnoresLegacyAutoPasteToggle() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let pasteCommandRecorder = PasteCommandRecorder()
+        var settings = UserSettings.defaults
+        settings.autoPasteEnabled = true
+        let controller = PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: FakeAccessibilityChecker(granted: true),
+            autoPasteDelay: 0,
+            pasteCommand: { pasteCommandRecorder.record() },
+        )
+
+        let result = try controller.restore(
+            ClipItem.fixture(),
+            settings: settings,
+            autoPasteIntent: .settingsControlled,
+        )
+
+        XCTAssertEqual(result, .restoredToClipboard)
+        XCTAssertEqual(adapter.writtenString, "hello")
+        XCTAssertEqual(pasteCommandRecorder.count, 0)
+    }
+
+    func testWriterFallsBackToPreviewTextWhenImagePayloadIsMissing() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let writer = ClipboardWriter(adapter: adapter)
+        let item = ClipItem.fixture(
+            primaryType: .image,
+            payload: .image(ImagePayload(byteCount: 12)),
+            previewText: "Image fallback",
+        )
+
+        try writer.restore(item)
+
+        XCTAssertEqual(adapter.writtenString, "Image fallback")
+        XCTAssertNil(adapter.writtenImageData)
+    }
+
+    func testWriterThrowsForInvalidURLPayload() {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        let writer = ClipboardWriter(adapter: adapter)
+        let item = ClipItem.fixture(
+            primaryType: .url,
+            payload: .url("://missing-scheme"),
+            previewText: "://missing-scheme",
+        )
+
+        XCTAssertThrowsError(try writer.restore(item)) { error in
+            XCTAssertEqual(error as? ClipboardError, .invalidURL)
+        }
+    }
+
+    func testPasteControllerReportsUnavailableWhenAutoPasteNeedsPermission() throws {
+        let adapter = FakePasteboardAdapter(changeCount: 1)
+        var settings = UserSettings.defaults
+        settings.defaultPasteBehavior = .autoPasteWhenAllowed
+        let controller = PasteController(
+            writer: ClipboardWriter(adapter: adapter),
+            accessibility: FakeAccessibilityChecker(granted: false),
+            autoPasteDelay: 0,
+            pasteCommand: {},
+        )
+
+        let result = try controller.restore(ClipItem.fixture(), settings: settings)
+
+        XCTAssertEqual(result, .autoPasteUnavailable)
+        XCTAssertEqual(adapter.writtenString, "hello")
+    }
+}
+
+final class AppKitPasteboardAdapterTests: XCTestCase {
+    func testNamedPasteboardRoundTripsString() {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let adapter = AppKitPasteboardAdapter(pasteboard: pasteboard)
+
+        adapter.writeString("hello")
+
+        XCTAssertEqual(adapter.readString(), "hello")
+        XCTAssertTrue(adapter.snapshot().declaredTypes.contains(NSPasteboard.PasteboardType.string.rawValue))
+    }
+
+    func testNamedPasteboardRoundTripsURL() {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let adapter = AppKitPasteboardAdapter(pasteboard: pasteboard)
+
+        adapter.writeURL(URL(string: "https://clipdock.app/docs")!)
+
+        XCTAssertEqual(adapter.readURL()?.absoluteString, "https://clipdock.app/docs")
+        XCTAssertEqual(adapter.readString(), "https://clipdock.app/docs")
+    }
+
+    func testNamedPasteboardRoundTripsFileURL() {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let adapter = AppKitPasteboardAdapter(pasteboard: pasteboard)
+        let fileURL = URL(fileURLWithPath: "/tmp/clipdock-ui-fixture.txt")
+
+        adapter.writeFileURL(fileURL)
+
+        XCTAssertEqual(adapter.readFileURL()?.path, fileURL.path)
+        XCTAssertEqual(adapter.readString(), fileURL.path)
+    }
+
+    func testNamedPasteboardRoundTripsImageData() {
+        let pasteboard = makePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let adapter = AppKitPasteboardAdapter(pasteboard: pasteboard)
+        let data = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+
+        adapter.writeImageData(data)
+
+        XCTAssertEqual(adapter.readImageData(), data)
+        XCTAssertTrue(adapter.snapshot().declaredTypes.contains(NSPasteboard.PasteboardType.png.rawValue))
+    }
+
+    private func makePasteboard() -> NSPasteboard {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("ClipDockTests.\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        return pasteboard
     }
 }
 
@@ -141,8 +392,10 @@ final class FakePasteboardAdapter: PasteboardAdapter {
     var fileURLValue: URL?
     var imageDataValue: Data?
     var sourceApp: SourceAppMetadata?
+    var estimatedByteSizeOverride: Int?
     var writtenString: String?
     var writtenURL: URL?
+    var writtenFileURL: URL?
     var writtenImageData: Data?
 
     init(changeCount: Int) {
@@ -153,7 +406,7 @@ final class FakePasteboardAdapter: PasteboardAdapter {
         ClipboardSnapshot(
             declaredTypes: declaredTypes,
             sourceApp: sourceApp,
-            estimatedByteSize: stringValue?.utf8.count ?? imageDataValue?.count ?? 0,
+            estimatedByteSize: estimatedByteSizeOverride ?? stringValue?.utf8.count ?? imageDataValue?.count ?? 0,
             previewText: stringValue ?? urlValue?.absoluteString ?? fileURLValue?.path,
         )
     }
@@ -164,6 +417,7 @@ final class FakePasteboardAdapter: PasteboardAdapter {
     func readImageData() -> Data? { imageDataValue }
     func writeString(_ value: String) { writtenString = value }
     func writeURL(_ value: URL) { writtenURL = value }
+    func writeFileURL(_ value: URL) { writtenFileURL = value }
     func writeImageData(_ data: Data) { writtenImageData = data }
 }
 

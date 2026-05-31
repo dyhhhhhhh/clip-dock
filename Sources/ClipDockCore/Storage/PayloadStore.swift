@@ -18,6 +18,7 @@ public final class PayloadStore {
 
     public func deletePayload(ref: String?) throws {
         guard let ref, FileManager.default.fileExists(atPath: ref) else { return }
+        guard isManagedPayloadPath(ref) else { return }
         try FileManager.default.removeItem(atPath: ref)
     }
 
@@ -30,6 +31,12 @@ public final class PayloadStore {
 
     public func byteSize() throws -> Int64 {
         try FileManager.default.clipDockDirectoryByteSize(at: directory)
+    }
+
+    private func isManagedPayloadPath(_ path: String) -> Bool {
+        let payloadURL = URL(fileURLWithPath: path).standardizedFileURL
+        let directoryPath = directory.standardizedFileURL.path
+        return payloadURL.path.hasPrefix(directoryPath + "/")
     }
 }
 

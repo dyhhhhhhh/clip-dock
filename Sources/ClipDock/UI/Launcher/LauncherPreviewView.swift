@@ -47,6 +47,8 @@ struct LauncherPreviewView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clipdock.launcher.preview")
     }
 }
 
@@ -61,6 +63,7 @@ struct LauncherFooter: View {
         }
         .font(.caption)
         .foregroundStyle(Design.muted)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.launcher.footer")
     }
 }

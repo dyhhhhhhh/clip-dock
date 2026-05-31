@@ -27,6 +27,7 @@ final class PrivacyTests: XCTestCase {
         XCTAssertTrue(detector.containsSensitiveText("-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"))
         XCTAssertTrue(detector.containsSensitiveText("api_key = sk_live_1234567890abcdef"))
         XCTAssertTrue(detector.containsSensitiveText("ghp_1234567890abcdefghijklmnop"))
+        XCTAssertTrue(detector.containsSensitiveText("Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"))
         XCTAssertTrue(detector.containsSensitiveText("Use OTP code 123456 to sign in"))
         XCTAssertTrue(detector.containsSensitiveText("4111 1111 1111 1111"))
         XCTAssertFalse(detector.containsSensitiveText("ClipDock saves clipboard history locally."))

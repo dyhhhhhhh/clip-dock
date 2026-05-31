@@ -2,11 +2,25 @@ import AppKit
 import ClipDockCore
 import SwiftUI
 
+struct MenuBarContentActions {
+    var dismiss: (() -> Void)?
+    var openHistory: (() -> Void)?
+    var openLauncher: (() -> Void)?
+    var openSettings: (() -> Void)?
+
+    static let environment = MenuBarContentActions()
+}
+
 struct MenuBarContentView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
+    private let actions: MenuBarContentActions
+
+    init(actions: MenuBarContentActions = .environment) {
+        self.actions = actions
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -32,8 +46,12 @@ struct MenuBarContentView: View {
             Divider()
             menuAction("打开主窗口", systemImage: "house", identifier: "clipdock.menu.openHistory") {
                 dismissMenuThen {
-                    openWindow(id: "history")
-                    appState.bringWindowToFront(title: "ClipDock")
+                    if let openHistory = actions.openHistory {
+                        openHistory()
+                    } else {
+                        openWindow(id: "history")
+                        appState.bringWindowToFront(title: "ClipDock")
+                    }
                 }
             }
             menuAction(
@@ -43,13 +61,21 @@ struct MenuBarContentView: View {
                 identifier: "clipdock.menu.openLauncher",
             ) {
                 dismissMenuThen {
-                    appState.openLauncher()
+                    if let openLauncher = actions.openLauncher {
+                        openLauncher()
+                    } else {
+                        appState.openLauncher()
+                    }
                 }
             }
             menuAction("设置...", systemImage: "gearshape", identifier: "clipdock.menu.openSettings") {
                 dismissMenuThen {
-                    openSettings()
-                    appState.bringWindowToFront(title: "ClipDock Settings")
+                    if let openSettings = actions.openSettings {
+                        openSettings()
+                    } else {
+                        openSettings()
+                        appState.bringWindowToFront(title: "ClipDock Settings")
+                    }
                 }
             }
             Divider()
@@ -57,15 +83,13 @@ struct MenuBarContentView: View {
         }
         .padding(12)
         .clipDockPanel()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.menu.panel")
     }
 
     private var header: some View {
         HStack {
-            Image(systemName: "doc.on.clipboard.fill")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(Design.primary)
-                .frame(width: 24, height: 24)
+            ClipDockBrandIcon(size: 24)
             Text("ClipDock")
                 .font(.headline)
             Spacer()
@@ -149,7 +173,7 @@ struct MenuBarContentView: View {
     }
 
     private func restoreAndPasteFromMenu(_ item: ClipItem) {
-        dismiss()
+        dismissMenu()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 120_000_000)
             appState.restoreAndAutoPaste(item)
@@ -157,7 +181,7 @@ struct MenuBarContentView: View {
     }
 
     private func dismissMenuThen(_ action: @escaping @MainActor () -> Void) {
-        dismiss()
+        dismissMenu()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 100_000_000)
             action()
@@ -165,7 +189,7 @@ struct MenuBarContentView: View {
     }
 
     private func confirmAndClearHistory() {
-        dismiss()
+        dismissMenu()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 80_000_000)
             let alert = NSAlert()
@@ -179,6 +203,14 @@ struct MenuBarContentView: View {
             if response == .alertFirstButtonReturn {
                 appState.clearHistory()
             }
+        }
+    }
+
+    private func dismissMenu() {
+        if let dismissAction = actions.dismiss {
+            dismissAction()
+        } else {
+            dismiss()
         }
     }
 
@@ -286,12 +318,13 @@ struct MenuBarRowView: View, Equatable {
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             Spacer()
-            if isHovering {
+            if isHovering || ProcessInfo.processInfo.environment["CLIPDOCK_UI_TEST_MODE"] == "1" {
                 HStack(spacing: 4) {
                     if let openSystemImageName = item.openSystemImageName {
                         rowIconButton(
                             systemImage: openSystemImageName,
                             title: item.openActionTitle,
+                            identifier: "clipdock.menu.recent.row.\(item.id.uuidString).open",
                             action: openExternally,
                         )
                     }
@@ -299,6 +332,7 @@ struct MenuBarRowView: View, Equatable {
                         rowIconButton(
                             systemImage: "folder",
                             title: "在 Finder 中显示",
+                            identifier: "clipdock.menu.recent.row.\(item.id.uuidString).finder",
                             action: revealInFinder,
                         )
                     }
@@ -306,6 +340,7 @@ struct MenuBarRowView: View, Equatable {
                         systemImage: item.isFavorite ? "star.fill" : "star",
                         title: item.isFavorite ? "取消收藏" : "收藏",
                         isActive: item.isFavorite,
+                        identifier: "clipdock.menu.recent.row.\(item.id.uuidString).favorite",
                         action: toggleFavorite,
                     )
                 }
@@ -340,6 +375,8 @@ struct MenuBarRowView: View, Equatable {
             }
         }
         .accessibilityAction(.default, restore)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clipdock.menu.recent.row.\(item.id.uuidString)")
     }
 
     @ViewBuilder private var thumbnail: some View {
@@ -375,7 +412,13 @@ struct MenuBarRowView: View, Equatable {
         }
     }
 
-    private func rowIconButton(systemImage: String, title: String, isActive: Bool = false, action: @escaping () -> Void) -> some View {
+    private func rowIconButton(
+        systemImage: String,
+        title: String,
+        isActive: Bool = false,
+        identifier: String,
+        action: @escaping () -> Void,
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 11, weight: .semibold))
@@ -391,6 +434,7 @@ struct MenuBarRowView: View, Equatable {
         .buttonStyle(.plain)
         .help(title)
         .accessibilityLabel(title)
+        .accessibilityIdentifier(identifier)
     }
 }
 

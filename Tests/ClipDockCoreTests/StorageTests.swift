@@ -148,6 +148,25 @@ final class StorageTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: payload))
     }
 
+    func testPayloadStoreDoesNotDeleteFilesOutsideItsDirectory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let outsideDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { try? FileManager.default.removeItem(at: outsideDirectory) }
+
+        let payloadStore = try PayloadStore(directory: directory)
+        let outsideFile = outsideDirectory.appendingPathComponent("outside.png")
+        try Data([1, 2, 3]).write(to: outsideFile)
+
+        try payloadStore.deletePayload(ref: outsideFile.path)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: outsideFile.path))
+    }
+
     func testRetentionCleanupRemovesOldAndExcessRecordsButKeepsFavoritesByDefault() throws {
         let repository = InMemoryClipRepository()
         let now = Date(timeIntervalSince1970: 10000)
@@ -162,6 +181,34 @@ final class StorageTests: XCTestCase {
 
         let items = try repository.recent(limit: 10)
         XCTAssertEqual(Set(items.map(\.contentHash)), ["favorite-old", "fresh"])
+    }
+
+    func testRetentionWithZeroMaxHistoryKeepsOnlyFavorites() throws {
+        let repository = InMemoryClipRepository()
+        let now = Date(timeIntervalSince1970: 10000)
+        let favorite = ClipItem.fixture(contentHash: "favorite", capturedAt: now, isFavorite: true)
+        let normal = ClipItem.fixture(contentHash: "normal", capturedAt: now.addingTimeInterval(-1))
+
+        try repository.upsert(favorite)
+        try repository.upsert(normal)
+        try repository.enforceRetention(settings: UserSettings(maxHistoryCount: 0, retentionDays: 30), now: now)
+
+        XCTAssertEqual(try repository.recent(limit: 10).map(\.contentHash), ["favorite"])
+    }
+
+    func testSQLiteRetentionWithZeroMaxHistoryKeepsOnlyFavorites() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = try SQLiteClipRepository(directory: directory)
+        let now = Date(timeIntervalSince1970: 10000)
+        let favorite = ClipItem.fixture(contentHash: "favorite", capturedAt: now, isFavorite: true)
+        let normal = ClipItem.fixture(contentHash: "normal", capturedAt: now.addingTimeInterval(-1))
+
+        try repository.upsert(favorite)
+        try repository.upsert(normal)
+        try repository.enforceRetention(settings: UserSettings(maxHistoryCount: 0, retentionDays: 30), now: now)
+
+        XCTAssertEqual(try repository.recent(limit: 10).map(\.contentHash), ["favorite"])
     }
 
     func testSQLiteRepositoryRetentionCleanupRemovesAssociatedPayloads() throws {

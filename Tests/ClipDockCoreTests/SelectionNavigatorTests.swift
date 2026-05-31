@@ -37,4 +37,16 @@ final class SelectionNavigatorTests: XCTestCase {
     func testReturnsNilWhenItemsAreEmpty() {
         XCTAssertNil(SelectionNavigator.move(from: nil, in: [], direction: .down))
     }
+
+    func testLauncherResultScopeLimitsNavigationToVisibleItems() {
+        let items = (0 ..< 10).map { index in
+            ClipItem.fixture(contentHash: "\(index)")
+        }
+
+        let visibleItems = LauncherResultScope.visibleItems(from: items)
+
+        XCTAssertEqual(visibleItems.count, 8)
+        XCTAssertEqual(visibleItems.first?.id, items[0].id)
+        XCTAssertEqual(visibleItems.last?.id, items[7].id)
+    }
 }

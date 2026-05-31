@@ -60,6 +60,8 @@ public struct SensitiveTextDetector: Sendable {
         containsPrivateKey(text)
             || containsSecretAssignment(text)
             || containsCommonTokenPrefix(text)
+            || containsBearerToken(text)
+            || containsJSONWebToken(text)
             || containsOTP(text)
             || containsCreditCard(text)
             || containsHighEntropyToken(text)
@@ -79,6 +81,20 @@ public struct SensitiveTextDetector: Sendable {
     private func containsCommonTokenPrefix(_ text: String) -> Bool {
         text.range(
             of: #"(?i)\b(ghp|gho|ghu|ghs|github_pat|glpat|sk_live|sk_test|xoxb|xoxp|xoxa|AKIA|ASIA)[A-Za-z0-9_\-]{12,}\b"#,
+            options: .regularExpression,
+        ) != nil
+    }
+
+    private func containsBearerToken(_ text: String) -> Bool {
+        text.range(
+            of: #"(?i)\bauthorization\s*:\s*bearer\s+[A-Za-z0-9_\-.=]{20,}"#,
+            options: .regularExpression,
+        ) != nil
+    }
+
+    private func containsJSONWebToken(_ text: String) -> Bool {
+        text.range(
+            of: #"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b"#,
             options: .regularExpression,
         ) != nil
     }

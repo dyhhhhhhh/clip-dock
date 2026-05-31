@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(name: "ClipDockCore", targets: ["ClipDockCore"]),
         .executable(name: "ClipDock", targets: ["ClipDock"]),
+        .executable(name: "ClipDockUIQARunner", targets: ["ClipDockUIQARunner"]),
     ],
     dependencies: [
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.10.0"),
@@ -25,13 +26,17 @@ let package = Package(
             name: "ClipDock",
             dependencies: ["ClipDockCore"],
         ),
+        .executableTarget(
+            name: "ClipDockUIQARunner",
+            dependencies: ["ClipDockCore"],
+        ),
         .testTarget(
             name: "ClipDockCoreTests",
             dependencies: ["ClipDockCore"],
         ),
         .testTarget(
             name: "ClipDockUITests",
-            dependencies: [],
+            dependencies: ["ClipDockCore"],
         ),
     ],
 )

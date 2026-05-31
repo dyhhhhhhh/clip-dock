@@ -29,6 +29,20 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(decoded.globalShortcut, UserSettings.defaults.globalShortcut)
     }
 
+    func testUserSettingsMigratesLegacyAutoPasteToggleToDefaultPasteBehavior() throws {
+        let json = """
+        {
+          "autoPasteEnabled": true,
+          "defaultPasteBehavior": "restoreOnly"
+        }
+        """
+
+        let decoded = try JSONDecoder.clipDock.decode(UserSettings.self, from: Data(json.utf8))
+
+        XCTAssertFalse(decoded.autoPasteEnabled)
+        XCTAssertEqual(decoded.defaultPasteBehavior, .autoPasteWhenAllowed)
+    }
+
     func testClipItemRoundTripsThroughCodable() throws {
         let item = ClipItem(
             contentHash: "abc",

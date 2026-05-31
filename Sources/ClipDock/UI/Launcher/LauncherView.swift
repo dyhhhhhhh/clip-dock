@@ -17,9 +17,9 @@ struct LauncherView: View {
 
     var body: some View {
         let items = filteredItems
-        let displayedItems = Array(items.prefix(8))
-        let selectedItem = appState.selectedClip(in: items)
-        let previewedItem = appState.previewedClip(in: items)
+        let displayedItems = LauncherResultScope.visibleItems(from: items)
+        let selectedItem = appState.selectedClip(in: displayedItems)
+        let previewedItem = appState.previewedClip(in: displayedItems)
 
         VStack(spacing: 10) {
             LauncherDragHandle()
@@ -35,6 +35,10 @@ struct LauncherView: View {
                 isEmpty: items.isEmpty,
                 selectedID: selectedItem?.id,
                 select: selectClip,
+                restore: restoreAndAutoPasteAndClose,
+                toggleFavorite: toggleFavorite,
+                openExternally: openExternally,
+                revealInFinder: revealInFinder,
             )
 
             if let item = previewedItem {
@@ -46,6 +50,7 @@ struct LauncherView: View {
         }
         .padding(16)
         .background(Design.canvas)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.launcher.root")
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(
@@ -58,13 +63,13 @@ struct LauncherView: View {
         }
         .focusable()
         .onAppear {
-            appState.moveSelection(.down, in: items)
+            appState.moveSelection(.down, in: displayedItems)
         }
         .onMoveCommand { direction in
-            handleMove(direction, items: items)
+            handleMove(direction, items: displayedItems)
         }
         .onKeyPress(.space) {
-            appState.togglePreview(in: items)
+            appState.togglePreview(in: displayedItems)
             return .handled
         }
         .onKeyPress(.return) {
@@ -99,6 +104,7 @@ struct LauncherView: View {
         .padding(.horizontal, 12)
         .frame(height: 44)
         .background(Design.surface1)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.launcher.resultsList")
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
@@ -122,6 +128,7 @@ struct LauncherView: View {
             }
             Spacer()
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.launcher.filters")
     }
 
@@ -134,6 +141,18 @@ struct LauncherView: View {
 
     private func selectClip(_ item: ClipItem) {
         appState.selectClip(item.id)
+    }
+
+    private func toggleFavorite(_ item: ClipItem) {
+        appState.toggleFavorite(item)
+    }
+
+    private func openExternally(_ item: ClipItem) {
+        appState.openExternally(item)
+    }
+
+    private func revealInFinder(_ item: ClipItem) {
+        appState.revealInFinder(item)
     }
 
     private func handleMove(_ direction: MoveCommandDirection, items: [ClipItem]) {
@@ -166,6 +185,11 @@ struct LauncherView: View {
 
     private func restoreAndClose(_ item: ClipItem?) {
         appState.restore(item)
+        close()
+    }
+
+    private func restoreAndAutoPasteAndClose(_ item: ClipItem?) {
+        appState.restoreForExplicitPaste(item)
         close()
     }
 

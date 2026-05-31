@@ -6,11 +6,26 @@ public protocol SettingsStore {
 }
 
 public final class UserDefaultsSettingsStore: SettingsStore {
+    public static let environmentSuiteKey = "CLIPDOCK_SETTINGS_SUITE"
+
     private let defaults: UserDefaults
     private let key = "ClipDock.UserSettings"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+    }
+
+    public static func configured(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> UserDefaultsSettingsStore {
+        guard let suiteName = environment[environmentSuiteKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !suiteName.isEmpty,
+              let defaults = UserDefaults(suiteName: suiteName)
+        else {
+            return UserDefaultsSettingsStore()
+        }
+
+        return UserDefaultsSettingsStore(defaults: defaults)
     }
 
     public func load() -> UserSettings {

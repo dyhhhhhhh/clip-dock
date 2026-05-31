@@ -27,6 +27,7 @@ struct HistoryWindowView: View {
             contentArea
         }
         .clipDockPanel()
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clipdock.history.root")
     }
 
@@ -49,7 +50,7 @@ struct HistoryWindowView: View {
                     items: items,
                     selectedID: selectedItem?.id,
                     select: selectClip,
-                    restore: restoreClip,
+                    restore: restoreAndAutoPasteClip,
                     toggleFavorite: toggleFavorite,
                     openExternally: openExternally,
                     revealInFinder: revealInFinder,
@@ -89,6 +90,10 @@ struct HistoryWindowView: View {
 
     private func restoreClip(_ item: ClipItem) {
         appState.restore(item)
+    }
+
+    private func restoreAndAutoPasteClip(_ item: ClipItem) {
+        appState.restoreForExplicitPaste(item)
     }
 
     private func toggleFavorite(_ item: ClipItem) {
